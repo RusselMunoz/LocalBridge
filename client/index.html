@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LocalBridge Client</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d0d0d;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: system-ui, sans-serif;
+      color: #eee;
+    }
+    #status {
+      margin-bottom: 12px;
+      font-size: 13px;
+      letter-spacing: .5px;
+      opacity: .7;
+    }
+    #screen {
+      width: 100%;
+      max-width: 1280px;
+      aspect-ratio: 16/9;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 6px;
+      cursor: none; /* we handle the cursor via input events */
+      display: block;
+    }
+    #connect-btn {
+      margin-top: 16px;
+      padding: 10px 28px;
+      background: #2563eb;
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 15px;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    #connect-btn:hover { background: #1d4ed8; }
+    #connect-btn:disabled { background: #444; cursor: default; }
+  </style>
+</head>
+<body>
+  <div id="status">Not connected</div>
+  <video id="screen" autoplay playsinline muted></video>
+  <button id="connect-btn">Connect</button>
+
+<script>
+'use strict';
+
+const video    = document.getElementById('screen');
+const statusEl = document.getElementById('status');
+const btn      = document.getElementById('connect-btn');
+
+// ── Config ────────────────────────────────────────────────────────────────────
+// In LAN mode the host IP is wherever you opened this page from.
+const HOST = window.location.origin;   // e.g. http://192.168.1.42:7878
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let pc = null;
+let dc = null;   // DataChannel for input events
+
+// ── Connect ───────────────────────────────────────────────────────────────────
+btn.addEventListener('click', connect);
+
+async function connect() {
+  btn.disabled = true;
+  setStatus('Connecting…');
+
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+
+  // Video track from host.
+  pc.ontrack = e => {
+    if (e.track.kind === 'video') {
+      video.srcObject = e.streams[0];
+      setStatus('🟢 Connected');
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
+      setStatus('🔴 Disconnected — refresh to reconnect');
+      btn.disabled = false;
+    }
+  };
+
+  // DataChannel for mouse / keyboard.
+  dc = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
+
+  // We need at least one transceiver to receive video.
+  pc.addTransceiver('video', { direction: 'recvonly' });
+
+  const offer  = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  // Send offer → host → get answer.
+  const res = await fetch(`${HOST}/offer`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+  });
+
+  const answer = await res.json();
+  if (answer.error) { setStatus('Error: ' + answer.error); return; }
+
+  await pc.setRemoteDescription(new RTCSessionDescription(answer));
+  setStatus('🟡 Waiting for stream…');
+}
+
+// ── Input forwarding ──────────────────────────────────────────────────────────
+
+function send(obj) {
+  if (dc && dc.readyState === 'open') dc.send(JSON.stringify(obj));
+}
+
+// Normalize mouse coords to the host screen size.
+function rel(e) {
+  const r = video.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) / r.width,
+    y: (e.clientY - r.top)  / r.height,
+  };
+}
+
+video.addEventListener('mousemove', e => {
+  const { x, y } = rel(e);
+  send({ type: 'mouse_move', x, y });
+});
+
+video.addEventListener('mousedown', e => {
+  const { x, y } = rel(e);
+  send({ type: 'mouse_down', x, y, button: e.button });
+});
+
+video.addEventListener('mouseup', e => {
+  const { x, y } = rel(e);
+  send({ type: 'mouse_up', x, y, button: e.button });
+});
+
+video.addEventListener('wheel', e => {
+  send({ type: 'mouse_scroll', dx: e.deltaX, dy: e.deltaY });
+}, { passive: true });
+
+document.addEventListener('keydown', e => {
+  send({ type: 'key_down', code: e.code });
+});
+
+document.addEventListener('keyup', e => {
+  send({ type: 'key_up', code: e.code });
+});
+
+// Prevent browser from hijacking right-click on the video.
+video.addEventListener('contextmenu', e => e.preventDefault());
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function setStatus(msg) { statusEl.textContent = msg; }
+</script>
+</body>
+</html>

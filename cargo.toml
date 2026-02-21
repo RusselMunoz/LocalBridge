@@ -1,0 +1,24 @@
+[package]
+name    = "pixelbridge"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pixelbridge"
+path = "src/main.rs"
+
+[dependencies]
+tokio              = { version = "1",   features = ["full"] }
+axum               = { version = "0.7", features = ["ws"] }
+tower-http         = { version = "0.5", features = ["cors", "fs"] }
+webrtc             = "0.11"
+windows-capture    = "1.5"
+openh264           = { version = "0.6", features = ["source"] }
+serde              = { version = "1",   features = ["derive"] }
+serde_json         = "1"
+anyhow             = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid               = { version = "1",   features = ["v4"] }
+bytes              = "1"
+yuv                = "0.8"
