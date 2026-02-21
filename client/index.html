@@ -54,17 +54,21 @@
 <script>
 'use strict';
 
+/**
+ * This frontend uses the built-in browser WebRTC API to connect to our Rust server.
+ */
+
 const video    = document.getElementById('screen');
 const statusEl = document.getElementById('status');
 const btn      = document.getElementById('connect-btn');
 
 // ── Config ────────────────────────────────────────────────────────────────────
-// In LAN mode the host IP is wherever you opened this page from.
-const HOST = window.location.origin;   // e.g. http://192.168.1.42:7878
+// 'window.location.origin' is the URL of the server that served this page.
+const HOST = window.location.origin;
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let pc = null;
-let dc = null;   // DataChannel for input events
+let pc = null; // The PeerConnection object (the heart of WebRTC)
+let dc = null; // The DataChannel (used for sending mouse/keyboard events)
 
 // ── Connect ───────────────────────────────────────────────────────────────────
 btn.addEventListener('click', connect);
@@ -73,18 +77,22 @@ async function connect() {
   btn.disabled = true;
   setStatus('Connecting…');
 
+  // 1. Create a new WebRTC PeerConnection.
+  // We use Google's STUN server to help figure out how to connect through firewalls.
   pc = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   });
 
-  // Video track from host.
+  // 2. This event triggers when the server starts sending video.
   pc.ontrack = e => {
     if (e.track.kind === 'video') {
+      // Set the video element's source to the incoming stream.
       video.srcObject = e.streams[0];
       setStatus('🟢 Connected');
     }
   };
 
+  // Monitor the connection state.
   pc.oniceconnectionstatechange = () => {
     if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
       setStatus('🔴 Disconnected — refresh to reconnect');
@@ -92,16 +100,18 @@ async function connect() {
     }
   };
 
-  // DataChannel for mouse / keyboard.
+  // 3. Create a DataChannel for sending input events (keyboard/mouse).
+  // 'ordered: false' and 'maxRetransmits: 0' makes it faster (like UDP).
   dc = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
 
-  // We need at least one transceiver to receive video.
+  // 4. Tell the PeerConnection that we want to receive video.
   pc.addTransceiver('video', { direction: 'recvonly' });
 
+  // 5. Generate a "WebRTC Offer" (a piece of text describing our capabilities).
   const offer  = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
-  // Send offer → host → get answer.
+  // 6. Send our offer to the Rust server via a standard POST request.
   const res = await fetch(`${HOST}/offer`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -111,17 +121,27 @@ async function connect() {
   const answer = await res.json();
   if (answer.error) { setStatus('Error: ' + answer.error); return; }
 
+  // 7. Receive the "Answer" from the server and tell WebRTC about it.
+  // Now the two peers can start trying to talk directly to each other.
   await pc.setRemoteDescription(new RTCSessionDescription(answer));
   setStatus('🟡 Waiting for stream…');
 }
 
 // ── Input forwarding ──────────────────────────────────────────────────────────
 
+/**
+ * Helper to send a JSON object over the WebRTC DataChannel.
+ */
 function send(obj) {
-  if (dc && dc.readyState === 'open') dc.send(JSON.stringify(obj));
+  if (dc && dc.readyState === 'open') {
+    dc.send(JSON.stringify(obj));
+  }
 }
 
-// Normalize mouse coords to the host screen size.
+/**
+ * Normalizes mouse coordinates from 0.0 to 1.0 based on the video element size.
+ * This ensures the mouse position is correct even if the video is resized.
+ */
 function rel(e) {
   const r = video.getBoundingClientRect();
   return {
@@ -129,6 +149,8 @@ function rel(e) {
     y: (e.clientY - r.top)  / r.height,
   };
 }
+
+// Listen for mouse and keyboard events and forward them to the server.
 
 video.addEventListener('mousemove', e => {
   const { x, y } = rel(e);

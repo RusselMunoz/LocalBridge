@@ -3,6 +3,9 @@ use serde::Deserialize;
 use tracing::{debug, warn};
 use webrtc::data_channel::RTCDataChannel;
 
+/// 'InputEvent' represents the different types of mouse and keyboard actions 
+/// that can be sent from the browser.
+/// We use 'serde' to automatically convert JSON from the browser into this Enum.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputEvent {
@@ -14,12 +17,16 @@ pub enum InputEvent {
     KeyUp       { code: String },
 }
 
+/// Sets up the handler for messages arriving on the WebRTC data channel.
 pub async fn handle_data_channel(dc: Arc<RTCDataChannel>) {
+    // This callback is triggered whenever the browser sends a message through the data channel.
     dc.on_message(Box::new(|msg| {
         Box::pin(async move {
+            // Convert the raw bytes from the message into a UTF-8 string.
             if let Ok(text) = std::str::from_utf8(&msg.data) {
+                // Try to parse the string as a JSON 'InputEvent'.
                 match serde_json::from_str::<InputEvent>(text) {
-                    Ok(ev) => inject(ev),
+                    Ok(ev) => inject(ev), // If successful, "inject" it into the system.
                     Err(e) => warn!("Bad input: {e}"),
                 }
             }
@@ -27,11 +34,9 @@ pub async fn handle_data_channel(dc: Arc<RTCDataChannel>) {
     }));
 }
 
+/// 'inject' is where we would actually simulate mouse and keyboard events on the host computer.
 fn inject(event: InputEvent) {
-    // TODO: add `enigo = "0.2"` to Cargo.toml and wire up real input injection.
-    // Example:
-    //   use enigo::{Enigo, Mouse, Settings};
-    //   let mut e = Enigo::new(&Settings::default()).unwrap();
-    //   e.move_mouse(x as i32, y as i32, enigo::Coordinate::Abs).unwrap();
+    // For now, we just print the event to the debug console.
+    // To actually move the mouse, you would use a library like 'enigo'.
     debug!("Input → {:?}", event);
 }
