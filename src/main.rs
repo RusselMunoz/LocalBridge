@@ -7,7 +7,7 @@ mod signaling;
 
 // 'use' statements are like imports in other languages. 
 // They bring external or internal items into the current scope.
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::IpAddr, sync::Arc};
 use anyhow::Result;
 use axum::{
     extract::State,
@@ -22,9 +22,10 @@ use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors,
         media_engine::{MediaEngine, MIME_TYPE_H264},
+        setting_engine::SettingEngine,
         APIBuilder,
     },
-    ice_transport::ice_server::RTCIceServer,
+    ice::network_type::NetworkType,
     interceptor::registry::Registry,
     peer_connection::{
         configuration::RTCConfiguration,
@@ -57,23 +58,20 @@ pub struct AppState {
 async fn main() -> Result<()> {
     // Initialize logging so we can see what's happening in the console.
     tracing_subscriber::fmt()
-        .with_env_filter("pixelbridge=debug,webrtc=warn")
+        .with_env_filter("info,pixelbridge=debug,localbridge=debug,webrtc=error")
         .init();
-
-    // Set up the WebRTC MediaEngine and register H.264 video codec support.
-    let mut me = MediaEngine::default();
-    me.register_default_codecs()?;
-    let mut reg = Registry::new();
-    reg = register_default_interceptors(reg, &mut me)?;
 
     // Create the video track. This is the "pipe" through which our video data flows.
     let video_track = Arc::new(TrackLocalStaticSample::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.to_owned(),
+            clock_rate: 90000,
+            // Baseline profile with packetization-mode=1 has broad browser support.
+            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
             ..Default::default()
         },
         "video".to_owned(),
-        "pixelbridge".to_owned(),
+        "localbridge".to_owned(),
     ));
 
     // Create a broadcast channel for internal frame distribution.
@@ -110,7 +108,7 @@ async fn main() -> Result<()> {
     // Bind the server to all network interfaces on port 7878.
     let addr = "0.0.0.0:7878";
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("PixelBridge listening on http://{addr}");
+    info!("LocalBridge listening on http://{addr}");
     info!("Open browser at http://<YOUR-LAN-IP>:7878");
 
     // Start serving requests.
@@ -128,7 +126,7 @@ async fn serve_client() -> impl IntoResponse {
 struct OfferBody {
     sdp:  String,
     #[serde(rename = "type")]
-    kind: String,
+    _kind: String,
 }
 
 /// Axum handler for the POST /offer route.
@@ -148,22 +146,38 @@ async fn handle_offer(
 
 /// Performs the WebRTC handshake: receives an offer, sets up a connection, and returns an answer.
 async fn do_offer(state: AppState, body: OfferBody) -> Result<RTCSessionDescription> {
+    let remote_candidate_count = body.sdp.matches("a=candidate:").count();
+    info!("Received offer with {remote_candidate_count} ICE candidate(s)");
+    if remote_candidate_count == 0 {
+        anyhow::bail!("Offer contained 0 ICE candidates. Refresh the client and retry.");
+    }
+    info!(
+        "Offer codec hints: h264={}, vp8={}",
+        body.sdp.contains("H264/90000"),
+        body.sdp.contains("VP8/90000")
+    );
+
     // Re-configure the MediaEngine for this specific connection.
     let mut me = MediaEngine::default();
     me.register_default_codecs()?;
-    let mut reg = Registry::new();
-    reg = register_default_interceptors(reg, &mut me)?;
+    let reg = Registry::new();
+    let reg = register_default_interceptors(reg, &mut me)?;
+    let mut se = SettingEngine::default();
+    // WLAN/LAN default: avoid IPv6/STUN-related gather errors on Windows and keep host UDP/IPv4 candidates.
+    se.set_network_types(vec![NetworkType::Udp4]);
+    se.set_ip_filter(Box::new(|ip: IpAddr| match ip {
+        IpAddr::V4(v4) => !v4.is_link_local() && !v4.is_unspecified(),
+        IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_multicast() && !v6.is_unspecified(),
+    }));
     let api = APIBuilder::new()
+        .with_setting_engine(se)
         .with_media_engine(me)
         .with_interceptor_registry(reg)
         .build();
 
-    // Use Google's public STUN server to help establish the peer-to-peer connection.
+    // LAN/WLAN mode: host candidates only (no public STUN/TURN).
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
+        ice_servers: vec![],
         ..Default::default()
     };
 
@@ -197,6 +211,15 @@ async fn do_offer(state: AppState, body: OfferBody) -> Result<RTCSessionDescript
     // Return the final local description (the "answer").
     let local = pc.local_description().await
         .ok_or_else(|| anyhow::anyhow!("No local description"))?;
-    info!("Peer {id} connected");
+    let local_candidate_count = local.sdp.matches("a=candidate:").count();
+    if local_candidate_count == 0 {
+        anyhow::bail!("Server gathered 0 ICE candidates. Verify WLAN interface is up.");
+    }
+    info!(
+        "Answer codec hints: h264={}, vp8={}",
+        local.sdp.contains("H264/90000"),
+        local.sdp.contains("VP8/90000")
+    );
+    info!("Peer {id} connected (remote={remote_candidate_count}, local={local_candidate_count} candidates)");
     Ok(local)
 }

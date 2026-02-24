@@ -19,7 +19,7 @@
       margin-bottom: 12px;
       font-size: 13px;
       letter-spacing: .5px;
-      opacity: .7;
+      opacity: .8;
     }
     #screen {
       width: 100%;
@@ -28,7 +28,7 @@
       background: #111;
       border: 1px solid #222;
       border-radius: 6px;
-      cursor: none; /* we handle the cursor via input events */
+      cursor: none;
       display: block;
     }
     #connect-btn {
@@ -54,103 +54,144 @@
 <script>
 'use strict';
 
-/**
- * This frontend uses the built-in browser WebRTC API to connect to our Rust server.
- */
-
-const video    = document.getElementById('screen');
+const video = document.getElementById('screen');
 const statusEl = document.getElementById('status');
-const btn      = document.getElementById('connect-btn');
-
-// ── Config ────────────────────────────────────────────────────────────────────
-// 'window.location.origin' is the URL of the server that served this page.
+const btn = document.getElementById('connect-btn');
 const HOST = window.location.origin;
 
-// ── State ─────────────────────────────────────────────────────────────────────
-let pc = null; // The PeerConnection object (the heart of WebRTC)
-let dc = null; // The DataChannel (used for sending mouse/keyboard events)
+let pc = null;
+let dc = null;
 
-// ── Connect ───────────────────────────────────────────────────────────────────
 btn.addEventListener('click', connect);
+
+video.addEventListener('loadedmetadata', async () => {
+  try { await video.play(); } catch (_) {}
+});
 
 async function connect() {
   btn.disabled = true;
-  setStatus('Connecting…');
+  setStatus('Connecting...');
 
-  // 1. Create a new WebRTC PeerConnection.
-  // We use Google's STUN server to help figure out how to connect through firewalls.
-  pc = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-  });
+  pc = new RTCPeerConnection({ iceServers: [] });
 
-  // 2. This event triggers when the server starts sending video.
   pc.ontrack = e => {
-    if (e.track.kind === 'video') {
-      // Set the video element's source to the incoming stream.
-      video.srcObject = e.streams[0];
-      setStatus('🟢 Connected');
-    }
+    if (e.track.kind !== 'video') return;
+
+    const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
+    video.srcObject = stream;
+    setStatus('Video track received');
+
+    e.track.onunmute = async () => {
+      try { await video.play(); } catch (_) {}
+      setStatus('Connected');
+    };
+
+    e.track.onended = () => setStatus('Video track ended');
   };
 
-  // Monitor the connection state.
   pc.oniceconnectionstatechange = () => {
-    if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
-      setStatus('🔴 Disconnected — refresh to reconnect');
+    if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
+      setStatus('Disconnected - refresh to reconnect');
       btn.disabled = false;
     }
   };
 
-  // 3. Create a DataChannel for sending input events (keyboard/mouse).
-  // 'ordered: false' and 'maxRetransmits: 0' makes it faster (like UDP).
   dc = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
 
-  // 4. Tell the PeerConnection that we want to receive video.
-  pc.addTransceiver('video', { direction: 'recvonly' });
+  const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+  preferH264(videoTransceiver);
 
-  // 5. Generate a "WebRTC Offer" (a piece of text describing our capabilities).
-  const offer  = await pc.createOffer();
+  const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  await waitForIceReady(pc, 10000);
 
-  // 6. Send our offer to the Rust server via a standard POST request.
   const res = await fetch(`${HOST}/offer`, {
-    method:  'POST',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+    body: JSON.stringify({
+      sdp: pc.localDescription?.sdp ?? offer.sdp,
+      type: pc.localDescription?.type ?? offer.type,
+    }),
   });
 
   const answer = await res.json();
-  if (answer.error) { setStatus('Error: ' + answer.error); return; }
+  if (answer.error) {
+    setStatus('Error: ' + answer.error);
+    btn.disabled = false;
+    return;
+  }
 
-  // 7. Receive the "Answer" from the server and tell WebRTC about it.
-  // Now the two peers can start trying to talk directly to each other.
   await pc.setRemoteDescription(new RTCSessionDescription(answer));
-  setStatus('🟡 Waiting for stream…');
+  setStatus('Waiting for stream...');
 }
 
-// ── Input forwarding ──────────────────────────────────────────────────────────
+function preferH264(transceiver) {
+  try {
+    const caps = RTCRtpReceiver.getCapabilities && RTCRtpReceiver.getCapabilities('video');
+    if (!caps || !Array.isArray(caps.codecs)) return;
 
-/**
- * Helper to send a JSON object over the WebRTC DataChannel.
- */
+    const h264 = caps.codecs.filter(c =>
+      (c.mimeType || '').toLowerCase() === 'video/h264' &&
+      (c.sdpFmtpLine || '').includes('packetization-mode=1')
+    );
+
+    if (h264.length > 0) {
+      transceiver.setCodecPreferences(h264);
+    }
+  } catch (_) {
+    // Best-effort only.
+  }
+}
+
+function sdpHasCandidate(sdp) {
+  return /(^|\r?\n)a=candidate:/m.test(sdp || '');
+}
+
+function waitForIceReady(pc, timeoutMs = 10000) {
+  if (sdpHasCandidate(pc.localDescription && pc.localDescription.sdp)) {
+    return Promise.resolve();
+  }
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+
+  return new Promise(resolve => {
+    const done = () => {
+      pc.removeEventListener('icegatheringstatechange', onState);
+      pc.removeEventListener('icecandidate', onCandidate);
+      clearTimeout(timer);
+      resolve();
+    };
+
+    const onState = () => {
+      if (pc.iceGatheringState === 'complete') {
+        done();
+      }
+    };
+
+    const onCandidate = e => {
+      if (e.candidate || sdpHasCandidate(pc.localDescription && pc.localDescription.sdp)) {
+        done();
+      }
+    };
+
+    const timer = setTimeout(done, timeoutMs);
+    pc.addEventListener('icegatheringstatechange', onState);
+    pc.addEventListener('icecandidate', onCandidate);
+  });
+}
+
 function send(obj) {
   if (dc && dc.readyState === 'open') {
     dc.send(JSON.stringify(obj));
   }
 }
 
-/**
- * Normalizes mouse coordinates from 0.0 to 1.0 based on the video element size.
- * This ensures the mouse position is correct even if the video is resized.
- */
 function rel(e) {
   const r = video.getBoundingClientRect();
   return {
     x: (e.clientX - r.left) / r.width,
-    y: (e.clientY - r.top)  / r.height,
+    y: (e.clientY - r.top) / r.height,
   };
 }
-
-// Listen for mouse and keyboard events and forward them to the server.
 
 video.addEventListener('mousemove', e => {
   const { x, y } = rel(e);
@@ -179,11 +220,11 @@ document.addEventListener('keyup', e => {
   send({ type: 'key_up', code: e.code });
 });
 
-// Prevent browser from hijacking right-click on the video.
 video.addEventListener('contextmenu', e => e.preventDefault());
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function setStatus(msg) { statusEl.textContent = msg; }
+function setStatus(msg) {
+  statusEl.textContent = msg;
+}
 </script>
 </body>
 </html>

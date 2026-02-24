@@ -10,6 +10,7 @@ pub struct H264Encoder {
     inner:  Encoder,
     width:  usize,
     height: usize,
+    frame_index: u64,
 }
 
 impl H264Encoder {
@@ -17,16 +18,26 @@ impl H264Encoder {
     pub fn new(width: usize, height: usize, _fps: u32) -> Result<Self> {
         // We use Cisco's OpenH264 library. 'from_source' will compile/link it for us.
         let api = OpenH264API::from_source();
-        let config = EncoderConfig::new();
+        let config = EncoderConfig::new()
+            .set_bitrate_bps(3_000_000)
+            .max_frame_rate(_fps as f32);
         Ok(Self {
             inner: Encoder::with_api_config(api, config)?,
             width,
             height,
+            frame_index: 0,
         })
     }
 
     /// Takes a raw BGRA buffer and returns a compressed H.264 bitstream.
     pub fn encode_bgra(&mut self, bgra: &[u8]) -> Result<Vec<u8>> {
+        self.frame_index += 1;
+        // Ensure late-joining peers quickly receive a decodable frame.
+        // At 30 FPS, interval 60 ~= every 2 seconds.
+        if self.frame_index == 1 || self.frame_index % 60 == 0 {
+            self.inner.force_intra_frame();
+        }
+
         // H.264 encoders usually don't accept BGRA (Red, Green, Blue, Alpha).
         // They require YUV420 format (Luminance and Chrominance).
         let yuv = bgra_to_yuv420(bgra, self.width, self.height);

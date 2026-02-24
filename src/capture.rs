@@ -1,11 +1,11 @@
 use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use tokio::sync::broadcast;
-use tracing::{error, debug};
+use tracing::{debug, error, info, warn};
 use webrtc::{media::Sample, track::track_local::track_local_static_sample::TrackLocalStaticSample};
 // 'windows_capture' is a library that provides high-performance screen capture on Windows.
 use windows_capture::{
-    capture::GraphicsCaptureApiHandler,
+    capture::{Context, GraphicsCaptureApiHandler},
     frame::Frame,
     graphics_capture_api::InternalCaptureControl,
     monitor::Monitor,
@@ -19,6 +19,27 @@ use crate::encoder::H264Encoder;
 
 // We want to capture and stream at 30 frames per second.
 const TARGET_FPS: u32 = 30;
+// One-based monitor index from windows-capture.
+const CAPTURE_MONITOR_INDEX: usize = 1;
+
+#[derive(Clone)]
+struct CaptureFlags {
+    track: Arc<TrackLocalStaticSample>,
+    width: usize,
+    height: usize,
+}
+
+fn select_capture_monitor() -> Result<Monitor> {
+    match Monitor::from_index(CAPTURE_MONITOR_INDEX) {
+        Ok(mon) => Ok(mon),
+        Err(e) => {
+            warn!(
+                "Monitor #{CAPTURE_MONITOR_INDEX} unavailable ({e}); falling back to primary monitor"
+            );
+            Ok(Monitor::primary()?)
+        }
+    }
+}
 
 /// 'FrameHandler' is the core of our capture logic.
 /// It implements 'GraphicsCaptureApiHandler', which means the 'windows-capture' 
@@ -27,27 +48,26 @@ struct FrameHandler {
     encoder: H264Encoder,
     track:   Arc<TrackLocalStaticSample>,
     rt:      tokio::runtime::Handle,
+    frame_count: u64,
 }
 
 impl GraphicsCaptureApiHandler for FrameHandler {
     // These type aliases define what data we pass when creating a new handler.
-    type Flags = Arc<TrackLocalStaticSample>;
+    type Flags = CaptureFlags;
     type Error = anyhow::Error;
 
     /// 'new' is called when the capture starts.
-    fn new(track: Self::Flags) -> Result<Self> {
-        // Find the primary monitor.
-        let mon = Monitor::primary()?;
-        let w   = mon.width()?  as usize;
-        let h   = mon.height()? as usize;
+    fn new(context: Context<Self::Flags>) -> Result<Self> {
+        let flags = context.flags;
         
-        // Initialize our H.264 encoder with the monitor's dimensions.
+        // Initialize our H.264 encoder with the selected monitor's dimensions.
         Ok(Self {
-            encoder: H264Encoder::new(w, h, TARGET_FPS)?,
-            track,
+            encoder: H264Encoder::new(flags.width, flags.height, TARGET_FPS)?,
+            track: flags.track,
             // We store a handle to the Tokio runtime so we can spawn tasks from inside 
             // the capture callback (which runs on its own thread).
             rt: tokio::runtime::Handle::current(),
+            frame_count: 0,
         })
     }
 
@@ -58,14 +78,18 @@ impl GraphicsCaptureApiHandler for FrameHandler {
         _ctrl: InternalCaptureControl,
     ) -> Result<()> {
         // 1. Get the raw pixel data (BGRA format) from the frame.
-        let buf = frame.buffer()?;
-        let raw = buf.as_raw_nopadding_buffer()?;
+        let mut buf = frame.buffer()?;
+        let raw = buf.as_nopadding_buffer()?;
         
         // 2. Encode the raw pixels into an H.264 bitstream (NAL units).
         let nal = self.encoder.encode_bgra(raw)?;
         
         // If the encoder didn't produce any data yet (some encoders buffer a few frames), just wait.
         if nal.is_empty() { return Ok(()); }
+        self.frame_count += 1;
+        if self.frame_count == 1 || self.frame_count % 120 == 0 {
+            info!("Encoded frame #{} ({} bytes)", self.frame_count, nal.len());
+        }
 
         // 3. Send the encoded data to the WebRTC track.
         // We use 'rt.spawn' to move the network-sending work to an async task,
@@ -96,8 +120,14 @@ pub async fn run(
     track: Arc<TrackLocalStaticSample>,
     _tx:   broadcast::Sender<Vec<u8>>,
 ) -> Result<()> {
-    // Select the primary monitor to capture.
-    let mon = Monitor::primary()?;
+    // Select the first monitor by index (with primary fallback).
+    let mon = select_capture_monitor()?;
+    let mon_index = mon.index().unwrap_or(CAPTURE_MONITOR_INDEX);
+    let mon_name = mon.name().unwrap_or_else(|_| "Unknown".to_owned());
+    let mon_device = mon.device_name().unwrap_or_else(|_| "Unknown".to_owned());
+    let width = mon.width()? as usize;
+    let height = mon.height()? as usize;
+    info!("Capturing monitor #{mon_index}: {mon_name} ({mon_device}) {width}x{height}");
     
     // Configure the capture settings.
     let settings = Settings::new(
@@ -108,7 +138,7 @@ pub async fn run(
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
         ColorFormat::Bgra8,                   // We want BGRA format (Blue-Green-Red-Alpha).
-        track,                                // Pass the video track as the 'Flags'.
+        CaptureFlags { track, width, height }, // Pass track and size to keep encoder in sync.
     );
 
     // 'FrameHandler::start' is a blocking call that begins the capture loop.
