@@ -38,6 +38,10 @@ pub async fn handle_data_channel(dc: Arc<RTCDataChannel>) {
     }));
 }
 
+extern "system" {
+    fn SetCursorPos(x: i32, y: i32) -> i32;
+}
+
 /// 'inject' simulates mouse and keyboard events on the host computer.
 fn inject(enigo: &mut Enigo, event: InputEvent) {
     match event {
@@ -46,14 +50,18 @@ fn inject(enigo: &mut Enigo, event: InputEvent) {
                 let abs_x = (x * w as f64).round() as i32;
                 let abs_y = (y * h as f64).round() as i32;
                 debug!("MouseMove -> x={} y={}", abs_x, abs_y);
-                enigo.mouse_move_to(abs_x, abs_y);
+                unsafe {
+                    SetCursorPos(abs_x, abs_y);
+                }
             }
         }
         InputEvent::MouseDown { x, y, button } => {
             if let Some((w, h)) = get_monitor_dimensions() {
                 let abs_x = (x * w as f64).round() as i32;
                 let abs_y = (y * h as f64).round() as i32;
-                enigo.mouse_move_to(abs_x, abs_y);
+                unsafe {
+                    SetCursorPos(abs_x, abs_y);
+                }
             }
             if let Some(btn) = map_button(button) {
                 debug!("MouseDown -> button={:?}", btn);
@@ -64,7 +72,9 @@ fn inject(enigo: &mut Enigo, event: InputEvent) {
             if let Some((w, h)) = get_monitor_dimensions() {
                 let abs_x = (x * w as f64).round() as i32;
                 let abs_y = (y * h as f64).round() as i32;
-                enigo.mouse_move_to(abs_x, abs_y);
+                unsafe {
+                    SetCursorPos(abs_x, abs_y);
+                }
             }
             if let Some(btn) = map_button(button) {
                 debug!("MouseUp -> button={:?}", btn);

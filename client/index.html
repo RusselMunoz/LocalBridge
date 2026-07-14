@@ -2,65 +2,335 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>LocalBridge Client</title>
+  <title>LocalBridge Dashboard</title>
   <style>
+    :root {
+      --bg-color: #08080c;
+      --card-bg: rgba(18, 18, 28, 0.7);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --error: #ef4444;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    
     body {
-      background: #0d0d0d;
+      background: var(--bg-color);
+      color: var(--text);
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
-      font-family: system-ui, sans-serif;
-      color: #eee;
+      min-height: 100vh;
+      font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+      overflow-x: hidden;
     }
-    #status {
-      margin-bottom: 12px;
-      font-size: 13px;
-      letter-spacing: .5px;
-      opacity: .8;
-    }
-    #screen {
+
+    .container {
       width: 100%;
       max-width: 1280px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      position: relative;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 16px;
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #3b82f6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
+    }
+
+    .status-badge {
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 500;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+
+    .status-dot.active {
+      background: var(--success);
+      box-shadow: 0 0 12px var(--success);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.9); opacity: 0.8; }
+      50% { transform: scale(1.1); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.8; }
+    }
+
+    .viewer-wrapper {
+      position: relative;
+      width: 100%;
       aspect-ratio: 16/9;
-      background: #111;
-      border: 1px solid #222;
-      border-radius: 6px;
-      cursor: none;
+      background: #000;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      overflow: hidden;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    #screen {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
       display: block;
     }
-    #connect-btn {
-      margin-top: 16px;
-      padding: 10px 28px;
-      background: #2563eb;
-      border: none;
-      border-radius: 6px;
-      color: #fff;
-      font-size: 15px;
-      cursor: pointer;
-      transition: background .2s;
+
+    /* Loading Overlay UI */
+    #loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(8, 8, 12, 0.95);
+      backdrop-filter: blur(12px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      transition: opacity 0.4s ease, visibility 0.4s;
     }
-    #connect-btn:hover { background: #1d4ed8; }
-    #connect-btn:disabled { background: #444; cursor: default; }
+
+    #loading-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .loader-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 32px;
+      width: 90%;
+      max-width: 480px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    }
+
+    .loader-card h2 {
+      font-size: 20px;
+      margin-bottom: 20px;
+      font-weight: 600;
+      text-align: center;
+      letter-spacing: -0.3px;
+    }
+
+    .checklist {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      list-style: none;
+      margin-bottom: 24px;
+    }
+
+    .checklist li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      color: var(--text-muted);
+      transition: color 0.3s;
+    }
+
+    .checklist li.active {
+      color: var(--text);
+    }
+
+    .checklist li.success {
+      color: var(--text);
+    }
+
+    .checklist li.failed {
+      color: var(--error);
+    }
+
+    .checklist li .icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      font-size: 12px;
+    }
+
+    .checklist li.active .icon {
+      border-color: var(--primary);
+      color: var(--primary);
+      animation: spin 1.5s linear infinite;
+    }
+
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
+    }
+
+    .checklist li.success .icon {
+      background: rgba(16, 185, 129, 0.1);
+      border-color: var(--success);
+      color: var(--success);
+    }
+
+    .checklist li.failed .icon {
+      background: rgba(239, 68, 68, 0.1);
+      border-color: var(--error);
+      color: var(--error);
+    }
+
+    .control-panel {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    .btn {
+      padding: 12px 32px;
+      font-size: 15px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--primary-hover);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary:disabled {
+      background: #222;
+      color: #555;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
-  <div id="status">Not connected</div>
-  <video id="screen" autoplay playsinline muted></video>
-  <button id="connect-btn">Connect</button>
+  <div class="container">
+    <header>
+      <h1>LocalBridge Dashboard</h1>
+      <div class="status-badge">
+        <div id="status-dot" class="status-dot"></div>
+        <span id="status-text">Not connected</span>
+      </div>
+    </header>
+
+    <div class="viewer-wrapper">
+      <video id="screen" autoplay playsinline muted></video>
+
+      <!-- Loading Overlay Screen -->
+      <div id="loading-overlay" class="hidden">
+        <div class="loader-card">
+          <h2>Establishing WebRTC Connection</h2>
+          <ul class="checklist">
+            <li id="step-init"><span class="icon">⏳</span> <span>Initializing peer connection...</span></li>
+            <li id="step-sdp"><span class="icon">⏳</span> <span>Generating local SDP offer...</span></li>
+            <li id="step-signaling"><span class="icon">⏳</span> <span>Exchanging signaling with Windows host...</span></li>
+            <li id="step-negotiate"><span class="icon">⏳</span> <span>Negotiating connection parameters...</span></li>
+            <li id="step-track"><span class="icon">⏳</span> <span>Awaiting H.264 video track...</span></li>
+            <li id="step-connect"><span class="icon">⏳</span> <span>Establishing low-latency stream...</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="control-panel">
+      <button id="connect-btn" class="btn btn-primary">Connect Stream</button>
+    </div>
+  </div>
 
 <script>
 'use strict';
 
 const video = document.getElementById('screen');
-const statusEl = document.getElementById('status');
+const statusText = document.getElementById('status-text');
+const statusDot = document.getElementById('status-dot');
 const btn = document.getElementById('connect-btn');
+const overlay = document.getElementById('loading-overlay');
 const HOST = window.location.origin;
 
 let pc = null;
 let dc = null;
+
+const steps = {
+  init: document.getElementById('step-init'),
+  sdp: document.getElementById('step-sdp'),
+  signaling: document.getElementById('step-signaling'),
+  negotiate: document.getElementById('step-negotiate'),
+  track: document.getElementById('step-track'),
+  connect: document.getElementById('step-connect')
+};
+
+function resetChecklist() {
+  Object.keys(steps).forEach(key => {
+    const el = steps[key];
+    el.className = '';
+    el.querySelector('.icon').textContent = '⏳';
+  });
+}
+
+function updateStep(stepId, status) {
+  const el = steps[stepId];
+  if (!el) return;
+  
+  el.className = status;
+  const icon = el.querySelector('.icon');
+  
+  if (status === 'active') {
+    icon.textContent = '🔄';
+  } else if (status === 'success') {
+    icon.textContent = '✓';
+  } else if (status === 'failed') {
+    icon.textContent = '✕';
+  }
+}
+
+function setStatus(text, isActive = false) {
+  statusText.textContent = text;
+  if (isActive) {
+    statusDot.classList.add('active');
+  } else {
+    statusDot.classList.remove('active');
+  }
+}
 
 btn.addEventListener('click', connect);
 
@@ -68,61 +338,112 @@ video.addEventListener('loadedmetadata', async () => {
   try { await video.play(); } catch (_) {}
 });
 
+// Periodic latency correction check
+setInterval(() => {
+  if (video.buffered && video.buffered.length > 0) {
+    const end = video.buffered.end(0);
+    const diff = end - video.currentTime;
+    // Keep latency below 150ms dynamically
+    if (diff > 0.18) {
+      video.currentTime = end - 0.03;
+    }
+  }
+}, 150);
+
 async function connect() {
   btn.disabled = true;
+  overlay.classList.remove('hidden');
+  resetChecklist();
   setStatus('Connecting...');
 
-  pc = new RTCPeerConnection({ iceServers: [] });
+  try {
+    // 1. Init
+    updateStep('init', 'active');
+    pc = new RTCPeerConnection({ iceServers: [] });
+    updateStep('init', 'success');
 
-  pc.ontrack = e => {
-    if (e.track.kind !== 'video') return;
+    // Setup Track Handler
+    pc.ontrack = e => {
+      if (e.track.kind !== 'video') return;
+      updateStep('track', 'success');
+      updateStep('connect', 'active');
 
-    const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
-    video.srcObject = stream;
-    setStatus('Video track received');
+      const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
+      video.srcObject = stream;
 
-    e.track.onunmute = async () => {
-      try { await video.play(); } catch (_) {}
-      setStatus('Connected');
+      e.track.onunmute = async () => {
+        try { await video.play(); } catch (_) {}
+        updateStep('connect', 'success');
+        setStatus('Connected (60 FPS)', true);
+        setTimeout(() => {
+          overlay.classList.add('hidden');
+        }, 600);
+      };
+
+      e.track.onended = () => {
+        setStatus('Disconnected');
+        overlay.classList.remove('hidden');
+        resetChecklist();
+      };
     };
 
-    e.track.onended = () => setStatus('Video track ended');
-  };
+    pc.oniceconnectionstatechange = () => {
+      if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
+        setStatus('Disconnected');
+        btn.disabled = false;
+        overlay.classList.remove('hidden');
+        resetChecklist();
+      }
+    };
 
-  pc.oniceconnectionstatechange = () => {
-    if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
-      setStatus('Disconnected - refresh to reconnect');
-      btn.disabled = false;
+    dc = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
+
+    const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+    preferH264(videoTransceiver);
+
+    // 2. Local SDP
+    updateStep('sdp', 'active');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitForIceReady(pc, 10000);
+    updateStep('sdp', 'success');
+
+    // 3. Signaling
+    updateStep('signaling', 'active');
+    const res = await fetch(`${HOST}/offer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sdp: pc.localDescription?.sdp ?? offer.sdp,
+        type: pc.localDescription?.type ?? offer.type,
+      }),
+    });
+    const answer = await res.json();
+    if (answer.error) {
+      throw new Error(answer.error);
     }
-  };
+    updateStep('signaling', 'success');
 
-  dc = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
+    // 4. Negotiate
+    updateStep('negotiate', 'active');
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    updateStep('negotiate', 'success');
 
-  const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
-  preferH264(videoTransceiver);
+    // 5. Track
+    updateStep('track', 'active');
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  await waitForIceReady(pc, 10000);
-
-  const res = await fetch(`${HOST}/offer`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sdp: pc.localDescription?.sdp ?? offer.sdp,
-      type: pc.localDescription?.type ?? offer.type,
-    }),
-  });
-
-  const answer = await res.json();
-  if (answer.error) {
-    setStatus('Error: ' + answer.error);
+  } catch (err) {
+    console.error(err);
+    setStatus('Connection failed');
     btn.disabled = false;
-    return;
+    // Mark first active/pending step as failed
+    const activeStep = Object.keys(steps).find(key => steps[key].className === 'active');
+    if (activeStep) {
+      updateStep(activeStep, 'failed');
+    } else {
+      updateStep('init', 'failed');
+    }
   }
-
-  await pc.setRemoteDescription(new RTCSessionDescription(answer));
-  setStatus('Waiting for stream...');
 }
 
 function preferH264(transceiver) {
@@ -138,9 +459,7 @@ function preferH264(transceiver) {
     if (h264.length > 0) {
       transceiver.setCodecPreferences(h264);
     }
-  } catch (_) {
-    // Best-effort only.
-  }
+  } catch (_) {}
 }
 
 function sdpHasCandidate(sdp) {
@@ -162,9 +481,7 @@ function waitForIceReady(pc, timeoutMs = 10000) {
     };
 
     const onState = () => {
-      if (pc.iceGatheringState === 'complete') {
-        done();
-      }
+      if (pc.iceGatheringState === 'complete') done();
     };
 
     const onCandidate = e => {
@@ -221,10 +538,6 @@ document.addEventListener('keyup', e => {
 });
 
 video.addEventListener('contextmenu', e => e.preventDefault());
-
-function setStatus(msg) {
-  statusEl.textContent = msg;
-}
 </script>
 </body>
 </html>

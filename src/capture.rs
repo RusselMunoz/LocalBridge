@@ -17,8 +17,8 @@ use windows_capture::{
 
 use crate::encoder::H264Encoder;
 
-// We want to capture and stream at 30 frames per second.
-const TARGET_FPS: u32 = 30;
+// We want to capture and stream at 60 frames per second.
+const TARGET_FPS: u32 = 60;
 // One-based monitor position in Monitor::enumerate() when PIXELBRIDGE_MONITOR is not set.
 const DEFAULT_CAPTURE_MONITOR_POS: usize = 3;
 
@@ -165,7 +165,7 @@ pub async fn run(
         CursorCaptureSettings::WithCursor,    // Capture the mouse cursor too.
         DrawBorderSettings::WithoutBorder,    // Don't show the yellow capture border.
         SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Custom(Duration::from_millis(33)),
+        MinimumUpdateIntervalSettings::Custom(Duration::from_millis(16)),
         DirtyRegionSettings::ReportAndRender,
         ColorFormat::Bgra8,                   // We want BGRA format (Blue-Green-Red-Alpha).
         CaptureFlags { track, width, height }, // Pass track and size to keep encoder in sync.
