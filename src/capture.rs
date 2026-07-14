@@ -19,8 +19,8 @@ use crate::encoder::H264Encoder;
 
 // We want to capture and stream at 30 frames per second.
 const TARGET_FPS: u32 = 30;
-// One-based monitor index from windows-capture.
-const CAPTURE_MONITOR_INDEX: usize = 1;
+// One-based monitor position in Monitor::enumerate() when PIXELBRIDGE_MONITOR is not set.
+const DEFAULT_CAPTURE_MONITOR_POS: usize = 3;
 
 #[derive(Clone)]
 struct CaptureFlags {
@@ -30,15 +30,45 @@ struct CaptureFlags {
 }
 
 fn select_capture_monitor() -> Result<Monitor> {
-    match Monitor::from_index(CAPTURE_MONITOR_INDEX) {
-        Ok(mon) => Ok(mon),
-        Err(e) => {
-            warn!(
-                "Monitor #{CAPTURE_MONITOR_INDEX} unavailable ({e}); falling back to primary monitor"
-            );
-            Ok(Monitor::primary()?)
-        }
+    let monitors = Monitor::enumerate()?;
+    if monitors.is_empty() {
+        return Ok(Monitor::primary()?);
     }
+
+    for (i, mon) in monitors.iter().enumerate() {
+        let idx = mon.index().unwrap_or(0);
+        let name = mon.name().unwrap_or_else(|_| "Unknown".to_owned());
+        let dev = mon.device_name().unwrap_or_else(|_| "Unknown".to_owned());
+        let w = mon.width().unwrap_or(0);
+        let h = mon.height().unwrap_or(0);
+        info!("Monitor pos={} idx={} name='{}' dev='{}' {}x{}", i + 1, idx, name, dev, w, h);
+    }
+
+    let requested_pos = std::env::var("LOCALBRIDGE_MONITOR")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_CAPTURE_MONITOR_POS);
+
+    if requested_pos == 0 {
+        warn!("LOCALBRIDGE_MONITOR=0 is invalid; using default position {DEFAULT_CAPTURE_MONITOR_POS}");
+    }
+
+    let pos = if requested_pos == 0 {
+        DEFAULT_CAPTURE_MONITOR_POS
+    } else {
+        requested_pos
+    };
+
+    if let Some(mon) = monitors.get(pos - 1) {
+        return Ok(*mon);
+    }
+
+    warn!(
+        "Requested monitor position {} unavailable (found {} monitor(s)); falling back to position 1",
+        pos,
+        monitors.len()
+    );
+    Ok(monitors[0])
 }
 
 /// 'FrameHandler' is the core of our capture logic.
@@ -122,7 +152,7 @@ pub async fn run(
 ) -> Result<()> {
     // Select the first monitor by index (with primary fallback).
     let mon = select_capture_monitor()?;
-    let mon_index = mon.index().unwrap_or(CAPTURE_MONITOR_INDEX);
+    let mon_index = mon.index().unwrap_or(0);
     let mon_name = mon.name().unwrap_or_else(|_| "Unknown".to_owned());
     let mon_device = mon.device_name().unwrap_or_else(|_| "Unknown".to_owned());
     let width = mon.width()? as usize;
@@ -135,8 +165,8 @@ pub async fn run(
         CursorCaptureSettings::WithCursor,    // Capture the mouse cursor too.
         DrawBorderSettings::WithoutBorder,    // Don't show the yellow capture border.
         SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
-        DirtyRegionSettings::Default,
+        MinimumUpdateIntervalSettings::Custom(Duration::from_millis(33)),
+        DirtyRegionSettings::ReportAndRender,
         ColorFormat::Bgra8,                   // We want BGRA format (Blue-Green-Red-Alpha).
         CaptureFlags { track, width, height }, // Pass track and size to keep encoder in sync.
     );

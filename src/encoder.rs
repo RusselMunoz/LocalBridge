@@ -13,13 +13,14 @@ pub struct H264Encoder {
     frame_index: u64,
 }
 
+
 impl H264Encoder {
     /// Creates a new encoder.
     pub fn new(width: usize, height: usize, _fps: u32) -> Result<Self> {
         // We use Cisco's OpenH264 library. 'from_source' will compile/link it for us.
         let api = OpenH264API::from_source();
         let config = EncoderConfig::new()
-            .set_bitrate_bps(3_000_000)
+            .set_bitrate_bps(8_000_000)
             .max_frame_rate(_fps as f32);
         Ok(Self {
             inner: Encoder::with_api_config(api, config)?,
@@ -67,38 +68,30 @@ impl H264Encoder {
 /// 420 means we keep full resolution for Brightness, but half resolution for Color.
 fn bgra_to_yuv420(bgra: &[u8], w: usize, h: usize) -> YUVBuffer {
     let pixels = w * h;
-    // Planar YUV420 structure:
-    // [All Y values for the whole image]
-    // [All U values for the image (at half width/height)]
-    // [All V values for the image (at half width/height)]
     let mut data = vec![0u8; pixels + pixels / 2]; 
 
-    let y_off = 0;
-    let u_off = pixels;
-    let v_off = pixels + pixels / 4;
+    let (y_plane, rest) = data.split_at_mut(pixels);
+    let (u_plane, v_plane) = rest.split_at_mut(pixels / 4);
 
-    for row in 0..h {
-        for col in 0..w {
-            let i = (row * w + col) * 4;
-            let b = bgra[i]     as f32;
-            let g = bgra[i + 1] as f32;
-            let r = bgra[i + 2] as f32;
+    let mut planar = yuv::YuvPlanarImageMut {
+        y_plane: yuv::BufferStoreMut::Borrowed(y_plane),
+        y_stride: w as u32,
+        u_plane: yuv::BufferStoreMut::Borrowed(u_plane),
+        u_stride: (w / 2) as u32,
+        v_plane: yuv::BufferStoreMut::Borrowed(v_plane),
+        v_stride: (w / 2) as u32,
+        width: w as u32,
+        height: h as u32,
+    };
 
-            // These are standard formulas to convert RGB to YUV.
-            let y =  16.0 + 0.257*r + 0.504*g + 0.098*b;
-            let u = 128.0 - 0.148*r - 0.291*g + 0.439*b;
-            let v = 128.0 + 0.439*r - 0.368*g - 0.071*b;
-
-            data[y_off + row * w + col] = y.clamp(0.0, 255.0) as u8;
-
-            // We only save U and V values for every 2x2 block of pixels (Chroma Subsampling).
-            if row % 2 == 0 && col % 2 == 0 {
-                let ci = (row / 2) * (w / 2) + (col / 2);
-                data[u_off + ci] = u.clamp(0.0, 255.0) as u8;
-                data[v_off + ci] = v.clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
+    yuv::bgra_to_yuv420(
+        &mut planar,
+        bgra,
+        (w * 4) as u32,
+        yuv::YuvRange::Limited,
+        yuv::YuvStandardMatrix::Bt601,
+        yuv::YuvConversionMode::Balanced,
+    ).expect("YUV conversion failed");
 
     YUVBuffer::from_vec(data, w, h)
 }
