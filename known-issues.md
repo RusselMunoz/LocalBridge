@@ -1,19 +1,28 @@
-# LocalBridge — Known Issues & Resolution Log
+# LocalBridge — Current Known Issues & Bottlenecks
 
-## [RESOLVED] 1. CPU-bound BGRA→YUV420 conversion
-- **Resolution**: Replaced nested scalar floating-point loop with `yuv` crate's SIMD-accelerated `bgra_to_yuv420` color space conversion using fixed-point integer math.
+While the initial stubs and crashes have been resolved, several critical performance bottlenecks remain, causing the current latency and delay.
 
-## [RESOLVED] 2. No dirty-region capture
-- **Resolution**: Configured capture settings to use `DirtyRegionSettings::ReportAndRender` to render and transmit frames only when changes are detected.
+---
 
-## [RESOLVED] 3. Input injection is a stub / Enigo mouse move panic
-- **Resolution**: Implemented Windows OS event simulation using `enigo = "0.1.3"`. Since Enigo's `mouse_move_to` absolute coordinates method panics on Windows when target windows are elevated or when hover events clash with UI Access boundaries, we bypassed Enigo's movement code and directly invoked the Windows User32 `SetCursorPos` API.
+## 1. Single-Threaded CPU YUV Conversion Bottleneck
+- **Status:** **Active / High Priority**
+- **File:** `src/capture.rs` and `src/encoder.rs`
+- **Problem:** Although we upgraded to the SIMD-accelerated `yuv` crate, the color conversion (`bgra_to_yuv420`) is still executed synchronously on a single CPU core within the frame capture thread. For a 1920x1080 frame, this single-threaded math takes anywhere from `15ms` to `30ms` depending on CPU clock speeds.
+- **Impact:** Directly caps the maximum frame rate well below 60 FPS and introduces cumulative capture thread latency.
 
-## [RESOLVED] 4. No encoder rate/quality control
-- **Resolution**: Set explicit encoder config parameters, raising target streaming bitrate to 8 Mbps for high-quality LAN connections.
+## 2. Software H.264 Encoding Overhead
+- **Status:** **Active / High Priority**
+- **File:** `src/encoder.rs`
+- **Problem:** Cisco's OpenH264 is a software-based encoder. Running H.264 compression on the CPU for high-resolution video streams consumes substantial CPU cycles.
+- **Impact:** Compressing 1080p frames on the CPU frequently spikes frame encoding times up to `50ms–100ms+` during periods of high motion (such as scrolling or playing videos), causing severe streaming delays.
 
-## [RESOLVED] 5. Capture rate limit & latency
-- **Resolution**: Upgraded target capture framework to 60 FPS (16ms update pacing). Added browser-side WebRTC video element buffer clearing inside the client dashboard to dynamically skip queued frames if browser-side delay exceeds 180ms.
+## 3. Lack of GPU Hardware Acceleration (NVENC / AMF / QuickSync)
+- **Status:** **Active / Medium Priority**
+- **Problem:** There is no GPU-accelerated encoding pipeline. Modern remote desktop tools (like Sunshine or Parsec) offload video encoding to dedicated hardware encoders on the graphics card (e.g., NVIDIA NVENC, AMD AMF, or Intel QuickSync).
+- **Impact:** Without hardware encoding, achieving sub-10ms capture-to-display latency is practically impossible at 1080p or higher resolutions.
 
-## [RESOLVED] 6. Real-time statistics reporting
-- **Resolution**: Added floating status indicators showing real-time client decoding FPS and transport/buffer delay (in milliseconds). Integrated debug logs tracking frame encoding times and warnings when an encoding step exceeds the 16.6ms window for 60 FPS.
+## 4. UIPI Restrictions on Administrative Windows
+- **Status:** **Active / Low Priority**
+- **File:** `src/input.rs`
+- **Problem:** Although we transitioned to `SetCursorPos` to resolve mouse movement panics, Windows User Interface Privilege Isolation (UIPI) still blocks lower-privilege processes from sending keyboard/click inputs to elevated or administrative windows (e.g., Task Manager).
+- **Impact:** Keystrokes and clicks will not register when an Administrator window has focus unless the `LocalBridge` host executable is run with Administrator privileges.
