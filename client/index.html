@@ -256,6 +256,16 @@
     <div class="viewer-wrapper">
       <video id="screen" autoplay playsinline muted></video>
 
+      <!-- Stats Overlay (Floating top-right) -->
+      <div id="stats-overlay" style="position: absolute; top: 12px; right: 12px; display: none; gap: 8px; z-index: 5;">
+        <div style="background: rgba(8, 8, 12, 0.7); backdrop-filter: blur(4px); padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-color); font-size: 13px; font-weight: 500; color: #fff;">
+          <span id="fps-text">FPS: --</span>
+        </div>
+        <div style="background: rgba(8, 8, 12, 0.7); backdrop-filter: blur(4px); padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-color); font-size: 13px; font-weight: 500; color: #fff;">
+          <span id="delay-text">Delay: --ms</span>
+        </div>
+      </div>
+
       <!-- Loading Overlay Screen -->
       <div id="loading-overlay" class="hidden">
         <div class="loader-card">
@@ -285,6 +295,9 @@ const statusText = document.getElementById('status-text');
 const statusDot = document.getElementById('status-dot');
 const btn = document.getElementById('connect-btn');
 const overlay = document.getElementById('loading-overlay');
+const statsOverlay = document.getElementById('stats-overlay');
+const fpsText = document.getElementById('fps-text');
+const delayText = document.getElementById('delay-text');
 const HOST = window.location.origin;
 
 let pc = null;
@@ -298,6 +311,35 @@ const steps = {
   track: document.getElementById('step-track'),
   connect: document.getElementById('step-connect')
 };
+
+let frameCount = 0;
+let lastFpsTime = performance.now();
+let isTrackingStats = false;
+
+function trackStats() {
+  if (!isTrackingStats) return;
+  frameCount++;
+  const now = performance.now();
+  const elapsed = now - lastFpsTime;
+  if (elapsed >= 1000) {
+    const fps = Math.round((frameCount * 1000) / elapsed);
+    fpsText.textContent = `FPS: ${fps}`;
+    frameCount = 0;
+    lastFpsTime = now;
+  }
+  
+  if (video.buffered && video.buffered.length > 0) {
+    const end = video.buffered.end(0);
+    const delayMs = Math.round((end - video.currentTime) * 1000);
+    delayText.textContent = `Delay: ${delayMs}ms`;
+  }
+  
+  if (video.requestVideoFrameCallback) {
+    video.requestVideoFrameCallback(trackStats);
+  } else {
+    requestAnimationFrame(trackStats);
+  }
+}
 
 function resetChecklist() {
   Object.keys(steps).forEach(key => {
@@ -355,6 +397,8 @@ async function connect() {
   overlay.classList.remove('hidden');
   resetChecklist();
   setStatus('Connecting...');
+  isTrackingStats = false;
+  statsOverlay.style.display = 'none';
 
   try {
     // 1. Init
@@ -375,6 +419,18 @@ async function connect() {
         try { await video.play(); } catch (_) {}
         updateStep('connect', 'success');
         setStatus('Connected (60 FPS)', true);
+        
+        // Start stats overlay tracking
+        isTrackingStats = true;
+        statsOverlay.style.display = 'flex';
+        lastFpsTime = performance.now();
+        frameCount = 0;
+        if (video.requestVideoFrameCallback) {
+          video.requestVideoFrameCallback(trackStats);
+        } else {
+          requestAnimationFrame(trackStats);
+        }
+
         setTimeout(() => {
           overlay.classList.add('hidden');
         }, 600);
@@ -384,6 +440,8 @@ async function connect() {
         setStatus('Disconnected');
         overlay.classList.remove('hidden');
         resetChecklist();
+        isTrackingStats = false;
+        statsOverlay.style.display = 'none';
       };
     };
 
@@ -393,6 +451,8 @@ async function connect() {
         btn.disabled = false;
         overlay.classList.remove('hidden');
         resetChecklist();
+        isTrackingStats = false;
+        statsOverlay.style.display = 'none';
       }
     };
 
@@ -436,6 +496,8 @@ async function connect() {
     console.error(err);
     setStatus('Connection failed');
     btn.disabled = false;
+    isTrackingStats = false;
+    statsOverlay.style.display = 'none';
     // Mark first active/pending step as failed
     const activeStep = Object.keys(steps).find(key => steps[key].className === 'active');
     if (activeStep) {

@@ -79,6 +79,9 @@ struct FrameHandler {
     track:   Arc<TrackLocalStaticSample>,
     rt:      tokio::runtime::Handle,
     frame_count: u64,
+    last_fps_log: std::time::Instant,
+    encoded_frames_this_sec: u32,
+    accumulated_encoding_time: std::time::Duration,
 }
 
 impl GraphicsCaptureApiHandler for FrameHandler {
@@ -98,6 +101,9 @@ impl GraphicsCaptureApiHandler for FrameHandler {
             // the capture callback (which runs on its own thread).
             rt: tokio::runtime::Handle::current(),
             frame_count: 0,
+            last_fps_log: std::time::Instant::now(),
+            encoded_frames_this_sec: 0,
+            accumulated_encoding_time: std::time::Duration::from_secs(0),
         })
     }
 
@@ -107,6 +113,8 @@ impl GraphicsCaptureApiHandler for FrameHandler {
         frame: &mut Frame,
         _ctrl: InternalCaptureControl,
     ) -> Result<()> {
+        let start = std::time::Instant::now();
+
         // 1. Get the raw pixel data (BGRA format) from the frame.
         let mut buf = frame.buffer()?;
         let raw = buf.as_nopadding_buffer()?;
@@ -114,12 +122,37 @@ impl GraphicsCaptureApiHandler for FrameHandler {
         // 2. Encode the raw pixels into an H.264 bitstream (NAL units).
         let nal = self.encoder.encode_bgra(raw)?;
         
+        let elapsed = start.elapsed();
+        self.accumulated_encoding_time += elapsed;
+        self.encoded_frames_this_sec += 1;
+
+        if elapsed > std::time::Duration::from_millis(16) {
+            warn!(
+                "Slow frame encode! Took {:.2?} (target is <16.6ms for 60 FPS). This causes delay.",
+                elapsed
+            );
+        }
+
+        // Print FPS every 1 second
+        if self.last_fps_log.elapsed() >= std::time::Duration::from_secs(1) {
+            let actual_fps = self.encoded_frames_this_sec;
+            let avg_encode_time = if actual_fps > 0 {
+                self.accumulated_encoding_time / actual_fps
+            } else {
+                std::time::Duration::from_secs(0)
+            };
+            info!(
+                "Host Status -> Capturing & Encoding at {} FPS (avg encode time: {:.2?})",
+                actual_fps, avg_encode_time
+            );
+            self.encoded_frames_this_sec = 0;
+            self.accumulated_encoding_time = std::time::Duration::from_secs(0);
+            self.last_fps_log = std::time::Instant::now();
+        }
+
         // If the encoder didn't produce any data yet (some encoders buffer a few frames), just wait.
         if nal.is_empty() { return Ok(()); }
         self.frame_count += 1;
-        if self.frame_count == 1 || self.frame_count % 120 == 0 {
-            info!("Encoded frame #{} ({} bytes)", self.frame_count, nal.len());
-        }
 
         // 3. Send the encoded data to the WebRTC track.
         // We use 'rt.spawn' to move the network-sending work to an async task,
